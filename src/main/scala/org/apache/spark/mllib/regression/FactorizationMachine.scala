@@ -3,14 +3,10 @@ package org.apache.spark.mllib.regression
 import org.json4s.DefaultFormats
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
-
-import scala.util.Random
-
-import org.apache.spark.{SparkContext, Logging}
+import org.apache.spark.SparkContext
 import org.apache.spark.mllib.linalg._
 import org.apache.spark.mllib.optimization.{Updater, Gradient}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.storage.StorageLevel
 import org.apache.spark.mllib.util.Loader._
 import org.apache.spark.mllib.util.{Loader, Saveable}
 import org.apache.spark.sql.{DataFrame, SQLContext}
@@ -38,11 +34,11 @@ class FMModel(val task: Int,
   def predict(testData: Vector): Double = {
     require(testData.size == numFeatures)
 
-    var pred = intercept
+    var prediction = intercept
     if (weightVector.isDefined) {
       testData.foreachActive {
         case (i, v) =>
-          pred += weightVector.get(i) * v
+          prediction += weightVector.get(i) * v
       }
     }
 
@@ -55,14 +51,14 @@ class FMModel(val task: Int,
           sum += d
           sumSqr += d * d
       }
-      pred += (sum * sum - sumSqr) / 2
+      prediction += (sum * sum - sumSqr) / 2
     }
 
     task match {
       case 0 =>
-        Math.min(Math.max(pred, min), max)
+        Math.min(Math.max(prediction, min), max)
       case 1 =>
-        1.0 / (1.0 + Math.exp(-pred))
+        1.0 / (1.0 + Math.exp(-prediction))
     }
   }
 
@@ -107,13 +103,13 @@ object FMModel extends Loader[FMModel] {
 
       // Create Parquet data.
       val dataRDD: DataFrame = sc.parallelize(Seq(data), 1).toDF()
-      dataRDD.saveAsParquetFile(dataPath(path))
+      dataRDD.write.parquet(dataPath(path))
     }
 
     def load(sc: SparkContext, path: String): FMModel = {
       val sqlContext = new SQLContext(sc)
       // Load Parquet data.
-      val dataRDD = sqlContext.parquetFile(dataPath(path))
+      val dataRDD = sqlContext.read.parquet(dataPath(path))
       // Check schema explicitly since erasure makes it hard to use match-case for checking.
       checkSchema[Data](dataRDD.schema)
       val dataArray = dataRDD.select("task", "factorMatrix", "weightVector", "intercept", "min", "max").take(1)
@@ -170,13 +166,13 @@ class FMGradient(val task: Int, val k0: Boolean, val k1: Boolean, val k2: Int,
 
   private def predict(data: Vector, weights: Vector): (Double, Array[Double]) = {
 
-    var pred = if (k0) weights(weights.size - 1) else 0.0
+    var prediction = if (k0) weights(weights.size - 1) else 0.0
 
     if (k1) {
       val pos = numFeatures * k2
       data.foreachActive {
         case (i, v) =>
-          pred += weights(pos + i) * v
+          prediction += weights(pos + i) * v
       }
     }
 
@@ -189,26 +185,26 @@ class FMGradient(val task: Int, val k0: Boolean, val k1: Boolean, val k2: Int,
           sum(f) += d
           sumSqr += d * d
       }
-      pred += (sum(f) * sum(f) - sumSqr) / 2
+      prediction += (sum(f) * sum(f) - sumSqr) / 2
     }
 
     if (task == 0) {
-      pred = Math.min(Math.max(pred, min), max)
+      prediction = Math.min(Math.max(prediction, min), max)
     }
 
-    (pred, sum)
+    (prediction, sum)
   }
 
 
-  private def cumulateGradient(data: Vector, weights: Vector,
-                               pred: Double, label: Double,
+  private def accumulateGradient(data: Vector, weights: Vector,
+                               prediction: Double, label: Double,
                                sum: Array[Double], cumGrad: Vector): Unit = {
 
-    val mult = task match {
+    val multiplier = task match {
       case 0 =>
-        pred - label
+        prediction - label
       case 1 =>
-        -label * (1.0 - 1.0 / (1.0 + Math.exp(-label * pred)))
+        -label * (1.0 - 1.0 / (1.0 + Math.exp(-label * prediction)))
     }
 
     cumGrad match {
@@ -216,14 +212,14 @@ class FMGradient(val task: Int, val k0: Boolean, val k1: Boolean, val k2: Int,
         val cumValues = vec.values
 
         if (k0) {
-          cumValues(cumValues.length - 1) += mult
+          cumValues(cumValues.length - 1) += multiplier
         }
 
         if (k1) {
           val pos = numFeatures * k2
           data.foreachActive {
             case (i, v) =>
-              cumValues(pos + i) += v * mult
+              cumValues(pos + i) += v * multiplier
           }
         }
 
@@ -231,13 +227,13 @@ class FMGradient(val task: Int, val k0: Boolean, val k1: Boolean, val k2: Int,
           case (i, v) =>
             val pos = i * k2
             for (f <- 0 until k2) {
-              cumValues(pos + f) += (sum(f) * v - weights(pos + f) * v * v) * mult
+              cumValues(pos + f) += (sum(f) * v - weights(pos + f) * v * v) * multiplier
             }
         }
 
       case _ =>
         throw new IllegalArgumentException(
-          s"cumulateGradient only supports adding to a dense vector but got type ${cumGrad.getClass}.")
+          s"accumulateGradient only supports adding to a dense vector but got type ${cumGrad.getClass}.")
     }
   }
 
@@ -250,14 +246,14 @@ class FMGradient(val task: Int, val k0: Boolean, val k1: Boolean, val k2: Int,
 
   override def compute(data: Vector, label: Double, weights: Vector, cumGradient: Vector): Double = {
     require(data.size == numFeatures)
-    val (pred, sum) = predict(data, weights)
-    cumulateGradient(data, weights, pred, label, sum, cumGradient)
+    val (prediction, sum) = predict(data, weights)
+    accumulateGradient(data, weights, prediction, label, sum, cumGradient)
 
     task match {
       case 0 =>
-        (pred - label) * (pred - label)
+        (prediction - label) * (prediction - label)
       case 1 =>
-        1 - Math.signum(pred * label)
+        1 - Math.signum(prediction * label)
     }
   }
 }

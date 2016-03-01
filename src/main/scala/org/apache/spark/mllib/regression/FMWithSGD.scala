@@ -14,7 +14,7 @@ import scala.util.Random
 
 object FMWithSGD {
   /**
-    * Train a Factoriaton Machine Regression model given an RDD of (label, features) pairs. We run a fixed number
+    * Train a Factorization Machine Regression model given an RDD of (label, features) pairs. We run a fixed number
     * of iterations of gradient descent using the specified step size. Each iteration uses
     * `miniBatchFraction` fraction of the data to calculate a stochastic gradient. The weights used
     * in gradient descent are initialized using the initial weights provided.
@@ -77,7 +77,7 @@ class FMWithSGD(private var task: Int,
   private var r1: Double = regParam._2
   private var r2: Double = regParam._3
 
-  private var initMean: Double = 0
+  private val initMean: Double = 0
   private var initStd: Double = 0.01
 
   private var numFeatures: Int = -1
@@ -169,9 +169,9 @@ class FMWithSGD(private var task: Int,
 
   /**
     * Encode the FMModel to a dense vector, with its first numFeatures * numFactors elements representing the
-    * factorization matrix v, sequential numFeaturs elements representing the one-way interactions weights w if k1 is
+    * factorization matrix v, sequential numFeatures elements representing the one-way interactions weights w if k1 is
     * set to true, and the last element representing the intercept w0 if k0 is set to true.
-    * The factorization matrix v is initialized by Gaussinan(0, initStd).
+    * The factorization matrix v is initialized by Gaussian(0, initStd).
     * v : numFeatures * numFactors + w : [numFeatures] + w0 : [1]
     */
   private def generateInitWeights(): Vector = {
@@ -195,7 +195,7 @@ class FMWithSGD(private var task: Int,
 
 
   /**
-    * Create a FMModle from an encoded vector.
+    * Create a FMModel from an encoded vector.
     */
   private def createModel(weights: Vector): FMModel = {
 
